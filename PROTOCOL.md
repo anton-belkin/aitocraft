@@ -55,10 +55,15 @@ heartbeat is older than 30 s, and may delete stale files.
 ```
 
 - `id` is unique across apps and stable while the document stays open (`<app>:<pid>:<doc uid>`).
+- `focusedAt` (optional, on a document, or on the whole file for every document of the app): when
+  that document's window last came to the front. `attach` without a document picks the frontmost
+  document with the latest `focusedAt`.
 - `path` is null for an unsaved document. `frontmost` is true for the document in the app's
   frontmost window (at most one per app).
 - Times are milliseconds since the Unix epoch.
 - The registry holds no document content and no client data: titles and paths only.
+- `AITOCRAFT_REGISTRY_DIR`, when set, replaces the folder (tests, isolated runs). The hub reads only
+  `*.json` files, so the temp file of an atomic write can be any other name.
 
 ## 2. What every app's MCP server adds
 
@@ -76,7 +81,11 @@ All existing tools keep working unchanged. Every app adds:
    dropped. `wait_for_questions {document, listener}` returns only that document's questions.
 5. **Questions carry their document**: every question object (tools, `/events`, channel events)
    has `document` (id) and `documentTitle`. `GET /events?document=<id>` streams only that
-   document's questions.
+   document's questions. The hub also passes `&listener=<id>`; an app may treat the open stream as
+   that listener being seen. Optionally, a `/events` line carries `place`: where the question was
+   asked, said for a person ("Sheet1!C16 (Revenue)", "paragraph 13 (“…”)", "slide 4 · Pricing"),
+   and `refs` (what ⟦n⟧ in the text points at). Without `place` the hub reads `range`/`label`,
+   `paragraph`/`quote` or `where.label`.
 6. **Ping**: `agent.ping` targets the active document; the ping goes to that document's listeners
    (and to every unfiltered `/events` stream). A ping answer records the listener that answered.
 7. **Status per document** (the Connection group): the active document's listeners, shown as
@@ -100,13 +109,19 @@ and exits when stdin closes. It is installed once in the client:
   app's `attach` and keeps the binding. `label` defaults to the client's name from `initialize`
   (`clientInfo.name`) plus, when given, what the agent passes (the project's name).
 - `detach {document?}`.
+- `app_tool {document?, tool, arguments}`: calls an app's tool by name, for clients that don't
+  refresh their tool list on `list_changed` (an app started after the conversation).
 - **Every tool of every live app**, merged by name. Tools with the same name in several apps
-  (`get_context`, `list_questions`, `answer_question`, …) are routed by `document`. If it's omitted,
-  they go to the conversation's single attached document. With none attached, or with more than
-  one, they return an error asking for `attach` or `document`. App-specific tools (`read_range`,
+  (`get_context`, `list_questions`, `answer_question`, …) are routed by `document` (an id, or a
+  name as for `attach`). If it's omitted, they go to the single attached document. With more than
+  one attached, or none attached and more than one open, they return an error asking for `attach`
+  or `document`; with none attached and exactly one open, they go to that one. App-specific tools (`read_range`,
   `read_document`, `read_slides`, …) go to their app. The hub adds `listener` to the calls it
-  forwards. Tool lists are fetched from the apps at start and when the registry changes, and the
-  hub sends `notifications/tools/list_changed` when they change.
+  forwards (to the four question tools, and to any tool whose schema declares `listener`). Tool
+  lists are fetched from the apps at start and when the registry changes, and the hub sends
+  `notifications/tools/list_changed` when they change. The last known tools of each app are kept
+  (`ArtCraft/aitocraft-tools.json`) and stay listed while the app isn't running, so a client that
+  started first still has them; calling one then says "GridCraft isn't running".
 
 One hub process may serve several conversations (Claude Desktop shares a server process), so
 bindings are keyed by `document`. The agent keeps the document id from `attach` and passes it on
@@ -118,7 +133,11 @@ The hub declares `capabilities.experimental["claude/channel"] = {}`. In a Claude
 started with `--dangerously-load-development-channels server:aitocraft`, after `attach` the hub
 follows `GET /events?document=<id>` of that document and emits each question as
 `notifications/claude/channel` with `content` (the question with its place) and `meta` (`document`,
-`question_id`, `kind`). The same one-time setup then serves both "work through my chat" (Cowork,
+`question_id`, `kind`, `app`). While it follows a document it refreshes that listener every 30 s
+(`list_questions {document, listener, status: "pending"}`), so the app keeps showing it as
+listening. When an attached document closes, the session gets one more event with `kind: "closed"`.
+Channel events are on for Claude Code (`clientInfo.name` `claude-code`) and for clients that declare
+`experimental["claude/channel"]`; `AITOCRAFT_CHANNELS=0|1` forces them off or on. The same one-time setup then serves both "work through my chat" (Cowork,
 `wait_for_questions`) and "push into my Claude Code session".
 
 ### What the user says

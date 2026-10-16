@@ -1,0 +1,16 @@
+[package]
+name = "aitocraft"
+version = "0.1.0"
+edition = "2024"
+description = "One MCP server for every document open in the ArtCraft Craft apps (GridCraft, WordCraft, DeckCraft)"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
