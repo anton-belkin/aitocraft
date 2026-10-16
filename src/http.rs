@@ -1,5 +1,6 @@
-//! A small HTTP/1.1 client for the apps' MCP servers on this machine: one connection per request
-//! (`Connection: close`), bounded heads and bodies, chunked bodies, server-sent events.
+//! A small HTTP/1.1 client for the apps' MCP servers on this machine: kept-alive connections for
+//! MCP calls ([`Pool`]), one connection per stream ([`request`]), bounded heads and bodies, chunked
+//! bodies, server-sent events.
 //! It refuses anything that isn't loopback, so a registry file can't send calls elsewhere.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -151,6 +152,107 @@ pub fn request(
         Box::new(r.take(MAX_BODY as u64))
     };
     Ok((head, body, stream))
+}
+
+/// Idle keep-alive connections to one server, reused by later requests.
+#[derive(Default)]
+pub struct Pool {
+    idle: std::sync::Mutex<Vec<(BufReader<TcpStream>, TcpStream)>>,
+}
+
+const MAX_IDLE: usize = 8;
+
+enum Sent {
+    Done(Head, Body),
+    /// The server closed a reused connection before answering: safe to send again.
+    Stale,
+}
+
+impl Pool {
+    /// POSTs `body` over a kept-alive connection (a fresh one if none is idle or the idle one went
+    /// stale). A complete response is read into memory and the connection goes back to the pool;
+    /// a stream (server-sent events, or no length) keeps the connection to itself.
+    pub fn send(&self, url: &Url, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<(Head, Body), String> {
+        let reused = crate::util::lock(&self.idle).pop();
+        if let Some(c) = reused {
+            match self.exchange(c, url, headers, body, timeout, true)? {
+                Sent::Done(h, b) => return Ok((h, b)),
+                Sent::Stale => {}
+            }
+        }
+        let s = connect(url)?;
+        let _ = s.set_nodelay(true);
+        let r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
+        match self.exchange((r, s), url, headers, body, timeout, false)? {
+            Sent::Done(h, b) => Ok((h, b)),
+            Sent::Stale => Err("the connection closed without a response".into()),
+        }
+    }
+
+    fn exchange(
+        &self,
+        (mut r, mut w): (BufReader<TcpStream>, TcpStream),
+        url: &Url,
+        headers: &[(&str, String)],
+        body: &[u8],
+        timeout: Duration,
+        reused: bool,
+    ) -> Result<Sent, String> {
+        w.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+        w.set_write_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+        let mut req = format!("POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: aitocraft/{}\r\n", url.path, url.authority(), env!("CARGO_PKG_VERSION"));
+        for (k, v) in headers {
+            if v.contains(['\r', '\n']) || k.contains(['\r', '\n', ':']) {
+                continue;
+            }
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+        let mut msg = req.into_bytes();
+        msg.extend_from_slice(body);
+        if let Err(e) = w.write_all(&msg).and_then(|()| w.flush()) {
+            return if reused { Ok(Sent::Stale) } else { Err(e.to_string()) };
+        }
+        let head = loop {
+            match read_head(&mut r) {
+                Ok(h) if (100..200).contains(&h.status) => continue,
+                Ok(h) => break h,
+                Err(_) if reused => return Ok(Sent::Stale),
+                Err(e) => return Err(e),
+            }
+        };
+        let ctype = head.header("content-type").unwrap_or("").to_ascii_lowercase();
+        let chunked = head.header("transfer-encoding").is_some_and(|t| t.to_ascii_lowercase().contains("chunked"));
+        let length = head.header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
+        let closes = head.header("connection").is_some_and(|c| c.eq_ignore_ascii_case("close"));
+        if ctype.starts_with("text/event-stream") || (!chunked && length.is_none() && !matches!(head.status, 202 | 204 | 304)) {
+            let body: Body = if chunked {
+                Box::new(BufReader::new(Chunked { inner: r, left: 0, after_chunk: false, done: false, total: 0 }))
+            } else {
+                Box::new(r.take(MAX_BODY as u64))
+            };
+            return Ok(Sent::Done(head, body));
+        }
+        let bytes = if chunked {
+            let mut c = BufReader::new(Chunked { inner: &mut r, left: 0, after_chunk: false, done: false, total: 0 });
+            read_all(&mut c, MAX_BODY)?
+        } else {
+            let n = length.unwrap_or(0);
+            if n > MAX_BODY as u64 {
+                return Err(format!("response of {n} bytes is too large"));
+            }
+            let mut v = vec![0; usize::try_from(n).map_err(|e| e.to_string())?];
+            r.read_exact(&mut v).map_err(|e| e.to_string())?;
+            v
+        };
+        if !closes {
+            let mut idle = crate::util::lock(&self.idle);
+            if idle.len() < MAX_IDLE {
+                idle.push((r, w));
+            }
+        }
+        Ok(Sent::Done(head, Box::new(std::io::Cursor::new(bytes))))
+    }
 }
 
 /// Stops a stream that another thread reads.
@@ -331,5 +433,72 @@ mod tests {
         assert_eq!(next_sse_data(&mut r, 1000).unwrap().unwrap(), "{\"a\":\n1}");
         assert_eq!(next_sse_data(&mut r, 1000).unwrap().unwrap(), "2");
         assert_eq!(next_sse_data(&mut r, 1000).unwrap(), None);
+    }
+
+    /// A keep-alive server answering `n` requests per connection; counts connections.
+    fn server(per_conn: usize) -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://127.0.0.1:{}/mcp", l.local_addr().unwrap().port())).unwrap();
+        let conns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = conns.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut w = s.try_clone().unwrap();
+                    let mut r = BufReader::new(s);
+                    for i in 0..per_conn {
+                        let Ok(h) = read_head_req(&mut r) else { return };
+                        let mut b = vec![0; h];
+                        if r.read_exact(&mut b).is_err() {
+                            return;
+                        }
+                        let body = format!("{{\"n\":{i}}}");
+                        if i % 2 == 0 {
+                            write!(w, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+                        } else {
+                            write!(w, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n", body.len()).unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        (url, conns)
+    }
+
+    fn read_head_req(r: &mut BufReader<TcpStream>) -> Result<usize, ()> {
+        let mut len = 0;
+        loop {
+            let mut line = String::new();
+            if r.read_line(&mut line).map_err(|_| ())? == 0 {
+                return Err(());
+            }
+            if line == "\r\n" {
+                return Ok(len);
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn calls_reuse_one_connection_and_survive_a_closed_one() {
+        let (url, conns) = server(100);
+        let pool = Pool::default();
+        for i in 0..6 {
+            let (h, mut b) = pool.send(&url, &[], b"{}", Duration::from_secs(5)).unwrap();
+            assert_eq!(h.status, 200);
+            assert_eq!(read_all(&mut b, 100).unwrap(), format!("{{\"n\":{i}}}").as_bytes(), "plain and chunked bodies");
+        }
+        assert_eq!(conns.load(std::sync::atomic::Ordering::SeqCst), 1, "one connection for all");
+        // A server that closes after each answer: the stale connection is replaced, the call succeeds.
+        let (url, conns) = server(1);
+        let pool = Pool::default();
+        for _ in 0..3 {
+            let (_, mut b) = pool.send(&url, &[], b"{}", Duration::from_secs(5)).unwrap();
+            assert_eq!(read_all(&mut b, 100).unwrap(), b"{\"n\":0}");
+        }
+        assert_eq!(conns.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

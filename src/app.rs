@@ -22,6 +22,9 @@ pub struct AppConn {
     version: Mutex<Option<String>>,
     ready: AtomicBool,
     ids: AtomicU64,
+    /// Kept-alive connections: a call costs no new TCP connection, and the app keeps its own
+    /// per-connection state (its control channel) warm.
+    pool: http::Pool,
 }
 
 enum PostError {
@@ -39,6 +42,7 @@ impl AppConn {
             version: Mutex::new(None),
             ready: AtomicBool::new(false),
             ids: AtomicU64::new(1),
+            pool: http::Pool::default(),
         }
     }
 
@@ -56,8 +60,7 @@ impl AppConn {
     /// Posts one message; the reply to it, if it has an id.
     fn post(&self, msg: &Value, timeout: Duration) -> Result<Option<Value>, PostError> {
         let body = msg.to_string();
-        let (head, mut r, _stream) =
-            http::request("POST", &self.url, &self.headers(), Some(body.as_bytes()), timeout).map_err(PostError::Unreachable)?;
+        let (head, mut r) = self.pool.send(&self.url, &self.headers(), body.as_bytes(), timeout).map_err(PostError::Unreachable)?;
         if let Some(sid) = head.header("mcp-session-id").filter(|s| !s.is_empty()) {
             *lock(&self.session) = Some(sid.to_string());
         }

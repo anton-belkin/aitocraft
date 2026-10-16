@@ -657,23 +657,18 @@ impl Hub {
     }
 
     fn forward(&self, name: &str, args: Value) -> Value {
-        self.refresh();
+        // The registry is watched every second; a call reads it again only when it can't be routed
+        // (an app or document that just appeared).
         let map = args.as_object().cloned().unwrap_or_default();
         let routed = {
             let st = lock(&self.st);
             self.route(&st, name, map.clone())
         };
-        // A tool nobody has yet: maybe an app just started.
         let routed = match routed {
-            Err(_)
-                if !lock(&self.st)
-                    .apps
-                    .values()
-                    .any(|i| i.tools.as_ref().is_some_and(|ts| ts.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(name)))) =>
-            {
+            Err(_) => {
                 self.refresh();
                 let st = lock(&self.st);
-                self.route(&st, name, map.clone())
+                self.route(&st, name, map)
             }
             r => r,
         };
