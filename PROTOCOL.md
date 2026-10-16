@@ -86,11 +86,15 @@ All existing tools keep working unchanged. Every app adds:
    asked, said for a person ("Sheet1!C16 (Revenue)", "paragraph 13 (“…”)", "slide 4 · Pricing"),
    and `refs` (what ⟦n⟧ in the text points at). Without `place` the hub reads `range`/`label`,
    `paragraph`/`quote` or `where.label`.
-6. **Ping**: `agent.ping` targets the active document; the ping goes to that document's listeners
-   (and to every unfiltered `/events` stream). A ping answer records the listener that answered.
-7. **Status per document** (the Connection group): the active document's listeners, shown as
-   "● Listening: Cowork · Acme · 20 s ago", the ping result, or "○ Nobody is listening for this
-   document". When nobody listens, questions still queue in the document.
+6. **Ping** (internal only): `agent.ping` targets the active document; the ping goes to that
+   document's listeners (and to every unfiltered `/events` stream). A ping answer records the
+   listener that answered. The app pings quietly to check readiness (§7); the UI never shows a
+   ping or its wording. An unanswered ping drops out of the question list after 60 s.
+7. **Readiness per document**: the Ready lamp of the Context group (§7), from the document's
+   listeners and the background client. When nobody listens, questions still queue in the document.
+8. **Events besides questions** (§6) on `/events` and in `wait_for_questions` results.
+9. **Off**: an app whose agent connection is off refuses agent calls with "the agent connection is
+   off in <App> (…)"; the hub passes such errors to the agent word for word.
 
 ## 3. The hub
 
@@ -132,33 +136,109 @@ every call. The hub's instructions say so.
 The hub declares `capabilities.experimental["claude/channel"] = {}`. In a Claude Code session
 started with `--dangerously-load-development-channels server:aitocraft`, after `attach` the hub
 follows `GET /events?document=<id>` of that document and emits each question as
-`notifications/claude/channel` with `content` (the question with its place) and `meta` (`document`,
-`question_id`, `kind`, `app`). While it follows a document it refreshes that listener every 30 s
+`notifications/claude/channel` with `content` (the question with its place, its topic, the pending
+proposals nearby and the file context summary) and `meta` (`document`, `question_id`, `kind`,
+`app`, and `topic` when the question has one). The events of §6 are passed on the same way, with
+`kind` set to the event's name and `topic`/`option` in `meta`. While it follows a document it refreshes that listener every 30 s
 (`list_questions {document, listener, status: "pending"}`), so the app keeps showing it as
 listening. When an attached document closes, the session gets one more event with `kind: "closed"`.
 Channel events are on for Claude Code (`clientInfo.name` `claude-code`) and for clients that declare
-`experimental["claude/channel"]`; `AITOCRAFT_CHANNELS=0|1` forces them off or on. The same one-time setup then serves both "work through my chat" (Cowork,
-`wait_for_questions`) and "push into my Claude Code session".
+`experimental["claude/channel"]`; `AITOCRAFT_CHANNELS=0|1` forces them off or on. The same
+one-time setup then serves both "work through my chat" (Cowork, `wait_for_questions`) and "push
+into my Claude Code session".
 
 ### What the user says
 
 "We're working on budget.xlsx" (or "on the open file"). The agent calls `list_documents` and
 `attach`, then either waits with `wait_for_questions {document}` in a loop (Cowork, Claude Desktop)
-or simply receives channel events (Claude Code with channels). Each app's Agent tab has a
-"Copy phrase for Claude" button that copies: `Work with me on "<title>" in <App> through AItoCraft:
+or simply receives channel events (Claude Code with channels). The Context group's **Get ready ▸
+Ask Cowork to collaborate** (§7) copies: `Work with me on "<title>" in <App> through AItoCraft:
 attach to it and answer my questions from the document as they come.`
 
 ## 4. Background agent (demoted)
 
-The app-run background agent stays available as the last mode. By default it runs in a neutral,
-empty folder of the app (`ArtCraft/agent-sessions/`, its sessions grouped there in Claude Desktop)
-so that no project's CLAUDE.md, memory or settings become its context. It is allowed only the
-document's tools (`--strict-mcp-config`, `--allowedTools "mcp__<app>__*"`). Using the document's
-folder as its project is an explicit option, labelled with what it implies. The mode's line in
-the list says: "The app runs Claude on your subscription. It sees only this document. Uses your
-limits."
+The app-run background agent is the Context group's **No context** mode, and the client behind its
+**Claude Code ▸ Project folder** variant (§7). By default it runs in a neutral, empty folder of the
+app (`ArtCraft/agent-sessions/`, its sessions grouped there in Claude Desktop) so that no project's
+CLAUDE.md, memory or settings become its context. It is allowed only the document's tools
+(`--strict-mcp-config`, `--allowedTools "mcp__<app>__*"`), plus WebSearch and WebFetch when the
+person ticks **Web**. Running it in a project folder is an explicit choice (Project folder), whose
+tooltip says that it then sees that folder's CLAUDE.md, memory and files.
 
 ## 5. Versioning
 
 `protocol` is `aitocraft/1`. A hub ignores registry files with another major version. New fields
 may be added; readers ignore what they don't know.
+
+## 6. Topics, proposals and events (TOPICS.md v1.1)
+
+The topic model (TOPICS.md) adds to what the apps send; the hub passes all of it through and relies
+on these shapes:
+
+- **Questions** carry `topic: {id, number, status, statusText}`, `pendingNearby: [{topic, option,
+  summary}]` (pending proposals on or next to the question's places) and `fileContext` (a short
+  summary of the file context, TOPICS.md §4c).
+- **Events** are objects with `event` instead of a question, on `/events` (one per line) and as
+  items in `wait_for_questions` results:
+
+  ```json
+  {"event": "proposal_rejected", "id": "e12", "document": "gridcraft:41234:3", "documentTitle": "budget.xlsx",
+   "topic": {"id": "t7", "number": 3}, "option": "A", "title": "Spread capex over 3 years",
+   "comment": "Only 2 years, the CFO said so", "hint": "the comment also comes as a follow-up question"}
+  ```
+
+  | `event` | When | The agent |
+  | --- | --- | --- |
+  | `withdrawn` | The person took a question back (undo). `id` is the question's. | Drops it; `answer_question` would be refused. |
+  | `proposal_applied` | The person applied an option. | Nothing to do. |
+  | `proposal_rejected` | The person rejected it, `comment` optional. The comment also arrives as a follow-up question in the topic. | Redoes the proposal when that question comes. |
+  | `proposal_outdated` | A recorded step no longer fits the document. | Redoes the proposal with `run_command {topic}`. |
+
+  `id` is unique per event (a question's id for `withdrawn`); the hub sends each event once.
+- **Proposals**: `run_command {…, topic, option?}` records a change on the topic's draft instead of
+  making it; `describe_option`, `discard_proposal`; reads mark `pending`, and `view: "proposal"`
+  shows an option applied (TOPICS.md §4b).
+
+## 7. Context: what the agent knows (the Agent tab's Context group)
+
+The ribbon's Agent tab has a **Context** group in place of the old Connection group. It answers one
+question: what does the agent know. The Mode list, the Copy ▾ menu and the status line are folded
+into it and removed; everything behind them keeps working (the AItoCraft installer, the phrase,
+channels, the background runner).
+
+**Left: the mode button.** A large button showing the current mode with a status dot. Its menu has
+three rows, each with the name, one line, and chips for what the agent knows:
+
+| Mode | Line | Chips | Behind it |
+| --- | --- | --- | --- |
+| **No context** | "Only this document. Runs in the background." | Document | The background client (§4) in its neutral, empty folder. |
+| **Claude Cowork** | "Your Cowork chat, its project and memory." | Document · Your chat | AItoCraft and the `wait_for_questions` loop in the person's chat. |
+| **Claude Code** | "Your Claude Code session or a project folder." | Document · Project folder | AItoCraft with channels (My session), or the background client in a chosen folder (Project folder). |
+
+**Right: what changes with the mode.**
+
+- **No context**: a **☐ Web** checkbox (when on, the background client may also use WebSearch and
+  WebFetch); the Ready lamp; **Get ready ▾**, shown only while the `claude` CLI isn't logged in, with
+  one step, **Log in to Claude** (opens a terminal running `claude auth login`).
+- **Claude Cowork**: the Ready lamp; **Get ready ▾** with **Install AItoCraft** (`aitocraft
+  --install-desktop`, §3) and **Ask Cowork to collaborate** (copies the phrase, §3).
+- **Claude Code**: a toggle **My session | Project folder**; the Ready lamp; **Get ready ▾**:
+  - My session: **Install AItoCraft** (`claude mcp add --scope user aitocraft -- <hub path>`; done
+    when `claude mcp get aitocraft` succeeds) and **Ask my session to collaborate** (copies `claude
+    --dangerously-load-development-channels server:aitocraft`).
+  - Project folder: **Choose folder…**, then the path is shown. The background client runs with that
+    folder as its cwd; the tooltip says it then sees that folder's CLAUDE.md, memory and files.
+
+**Rules.**
+
+- **The Ready lamp**: green **Ready** when a listener for this document was seen recently, or the
+  background client is usable; amber **Waiting** after a Get ready step, until a listener attaches;
+  grey **Not ready** otherwise. The app checks by itself and pings quietly when it needs to.
+- **No ping wording in the UI**, ever ("Is anyone there?" included). The ping stays an internal
+  mechanism (§2.6).
+- **Get ready**'s main click runs the next step not yet done; its dropdown lists all the steps,
+  done ones ticked.
+- **The mode is per document**, saved in the document's agent layer. A new document starts with the
+  last mode used in the app.
+- Mode, Web and folder changes are the person's actions: undoable where the app already makes layer
+  actions undoable (TOPICS.md §4a), with keytips like the rest of the ribbon.

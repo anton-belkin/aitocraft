@@ -474,3 +474,32 @@ fn a_dropped_listener_is_attached_again_and_app_errors_pass_through() {
     assert_eq!(text, off);
     let _ = std::fs::remove_dir_all(d.parent().unwrap());
 }
+
+#[test]
+fn proposal_and_withdrawn_events_reach_the_session_once() {
+    let d = dir("events");
+    let grid = FakeApp::start("gridcraft", "GridCraft", vec![], Reply::Json);
+    grid.register(&d, &[("1", "budget.xlsx", true)], 0);
+    let (hub, out) = hub_in(&d, None);
+    init(&hub, "claude-code");
+    call(&hub, "attach", json!({"document": "budget"}));
+    let doc = grid.doc("1");
+    grid.push_event(json!({"event": "withdrawn", "id": "q3", "document": doc, "hint": "the user took this question back: drop it"}));
+    grid.push_event(json!({"event": "proposal_rejected", "id": "e1", "document": doc, "topic": {"id": "t7", "number": 3}, "option": "A", "comment": "Only 2 years"}));
+    grid.push_event(json!({"event": "proposal_rejected", "id": "e1", "document": doc, "topic": {"id": "t7", "number": 3}, "option": "A", "comment": "Only 2 years"}));
+    grid.push_event(
+        json!({"event": "proposal_applied", "id": "e2", "document": doc, "topic": {"id": "t8", "number": 4}, "option": "B", "title": "Two years"}),
+    );
+    grid.push_event(json!({"event": "something_else", "id": "e3", "document": doc}));
+    let kind = |v: &Value, k: &str| v["method"] == "notifications/claude/channel" && v["params"]["meta"]["kind"] == k;
+    out.wait_for(3000, |v| kind(v, "proposal_applied")).expect("applied came through");
+    std::thread::sleep(Duration::from_millis(200));
+    let lines = out.lines();
+    let channel: Vec<&Value> = lines.iter().filter(|v| v["method"] == "notifications/claude/channel").collect();
+    assert_eq!(channel.len(), 3, "{channel:?}");
+    assert!(lines.iter().any(|v| kind(v, "withdrawn") && v["params"]["meta"]["question_id"] == "q3"));
+    let rejected = lines.iter().find(|v| kind(v, "proposal_rejected")).unwrap();
+    assert_eq!(rejected["params"]["meta"]["topic"], "t7");
+    assert!(rejected["params"]["content"].as_str().unwrap().contains("“Only 2 years”"));
+    let _ = std::fs::remove_dir_all(d.parent().unwrap());
+}

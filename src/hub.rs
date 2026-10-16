@@ -29,19 +29,35 @@ pub const INSTRUCTIONS: &str = "AItoCraft connects you to the documents the user
 GridCraft (spreadsheets), WordCraft (documents) and DeckCraft (slide decks). The user decides which document this conversation \
 works on, usually by saying \"we're working on budget.xlsx\" (or \"on the open file\").\n\
 1. Call list_documents, then attach {document: \"<file name, part of it, or id>\", label: \"<this project's or chat's name>\"}. \
-Omit document to attach to the file in front. Keep the document id that attach returns.\n\
+Omit document to attach to the file in front. Keep the document id that attach returns, and read get_file_context {document} once: \
+what the author wants every agent to know about the file.\n\
 2. Pass that id as `document` on EVERY other call. One AItoCraft serves several conversations and documents at once; \
 a call without `document` is refused when it isn't clear which document you mean.\n\
 3. Questions: the user asks them on cells, passages or slides without leaving the document. If this session receives channel \
-events from aitocraft (Claude Code with channels), simply answer each event as it arrives. Otherwise (Claude Desktop, Cowork, \
+events from aitocraft (Claude Code with channels), simply handle each event as it arrives. Otherwise (Claude Desktop, Cowork, \
 Claude Code without channels) call wait_for_questions {document} in a loop: handle what it returns, then call it again; when it \
 returns nothing, call it again. Keep going until the user says stop.\n\
-4. For each question: claim_question {document, id}, investigate with the document's tools (get_context, read_range, \
-read_document, read_slides, …), then answer_question {document, id, text, links} with links to what you used. Answer first, briefly.\n\
-5. A question with kind \"ping\" is a connection check: answer_question with \"here\" at once; don't investigate.\n\
-6. Markers ⟦1⟧, ⟦2⟧… in a question's text are what the user pointed at (clicked, selected) while asking; the question's refs \
+4. For each question: claim_question {document, id}, investigate with the document's tools (get_context, get_topic, read_range, \
+read_document, read_slides, …), then answer_question {document, id, text}. Answer first, briefly, with links inside the text \
+([B1](cell:Sheet1!B1), [§12](para:12), [slide 4](slide:4), [3.2](place:3.2), [source](https://…)).\n\
+5. Each question belongs to a topic (its `topic`: id, number, status). Work in that topic: add_places {topic, places} for places \
+a change here implies (with a reason), widen_place when the answer is about more than was selected, add_note for what will still \
+matter after the chat, set_status open|revise|info. Never set Agreed: propose_agreed {topic, reasons}; only the user agrees.\n\
+6. Changes: inside a topic never edit the document directly and never ask for confirmation in the chat. Propose: \
+run_command {document, topic, option?, command, params, reason} records the change on the topic's draft (option \"A\" by \
+default), then describe_option {document, topic, option, title, why}. Offer options B, C… only when there is a real choice. The \
+user applies or rejects it in the document. Check a proposal with read_document / read_range / read_slides {view: \"proposal\", \
+topic, option}. Reads mark what pending proposals touch (`pending`) and questions carry `pendingNearby`: take them into account.\n\
+7. Events come the same way as questions (channel events, or items with `event` in wait_for_questions): proposal_applied \
+(done, nothing to do); proposal_rejected (its comment also comes as a follow-up question: redo the proposal there); \
+proposal_outdated (the document changed: read again and redo it); withdrawn (the user took the question back: drop it).\n\
+8. A question with kind \"ping\" is a connection check: answer_question with \"here\" at once; don't investigate.\n\
+9. Markers ⟦1⟧, ⟦2⟧… in a question's text are what the user pointed at (clicked, selected) while asking; the question's refs \
 say which cell, passage or slide each one is.\n\
-7. Client data reads as {{placeholder}}: refer to it by its placeholder and never try to find the real value.";
+10. File context: questions carry a short summary (`fileContext`). When you learn something about the whole file that will \
+still matter (its purpose, audience, conventions), add_file_context or update_file_context.\n\
+11. Client data reads as {{placeholder}}: refer to it by its placeholder and never try to find the real value. When an app \
+says its agent connection is off, tell the user and stop.";
 
 /// How the hub was set up.
 #[derive(Clone, Debug, Default)]

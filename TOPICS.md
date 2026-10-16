@@ -1,8 +1,11 @@
-# Topics: what the agent layer keeps about a document (v1)
+# Topics: what the agent layer keeps about a document (v1.1)
 
 Shared model and UI for GridCraft, WordCraft and DeckCraft, agreed with Anton. Each app implements
 it in its own fork (repos don't share code); the MCP surface is the same in all three, so AItoCraft
 and the agent skill work everywhere.
+
+v1.1 (agreed with Anton on 2026-10-16) adds the pane's highlights (§3a), proposals instead of direct
+edits (§4b) and file context (§4c).
 
 ## 1. The model
 
@@ -135,6 +138,18 @@ Three tabs:
 
 The Questions and Notes tabs go away.
 
+## 3a. Highlights and the pane (v1.1)
+
+- **The caret highlights its topic.** When the caret (WordCraft), the active cell (GridCraft) or the
+  selected shape (DeckCraft) is inside a place, that place's topic lights up: its markers, the
+  place's outline, and its card in the pane.
+- **Hovering a link highlights its target.** Hovering a link in the pane (an answer, a note, a
+  place) highlights what it points at, without moving focus or the selection. A target that is off
+  screen gets an edge hint in its direction ("↓ §12", "→ F40"). A removed place shows its "was
+  between" neighbours highlighted.
+- **File context** has a button beside the pane's tabs (§4c).
+- The pane's font is one point larger than the app's interface font.
+
 ## 4. MCP for the agent
 
 All tools take `document` (AItoCraft). New or changed:
@@ -181,6 +196,64 @@ their edits and in order. The **agent's** contributions are not on the person's 
   Cell edits the agent made through `run_command` are document edits and stay in the ordinary
   history, labelled "Undo (agent): …".
 - WordCraft and DeckCraft do the same through their own undo models.
+- Applying a proposal (§4b) is the person's action: one undo step for all its changes.
+
+## 4b. Proposals instead of direct edits (v1.1)
+
+Inside a topic the agent doesn't change the document: it proposes, and the person applies or
+rejects in the document. The MCP surface is the same in all three apps.
+
+- **`run_command {…, topic, option?}`.** With `topic`, the command doesn't touch the document: it
+  runs on the topic's draft (a scratch copy) and is recorded in the proposal. `option` defaults to
+  `"A"`; the agent offers more options (`"B"`, `"C"`) only when there is a real choice. Without
+  `topic`, `run_command` works as before (outside any topic).
+- **`describe_option {topic, option, title, why}`** names an option and says why.
+  **`discard_proposal {topic, option?}`** drops one option, or the whole proposal.
+- **Reads mark what a pending proposal touches.** Paragraphs, cells and shapes carry
+  `pending: [{topic, option, summary}]`.
+- **Reads can show the proposal.** WordCraft `read_document {view: "proposal", topic, option?}`,
+  GridCraft `read_range {view: "proposal", topic, option?}`, DeckCraft `read_slides {view:
+  "proposal", topic, option?}`: the document as it would be with that option applied.
+- **`list_topics` and `get_topic`** show `proposal: {options: [{option, title, why, changes}],
+  state}`, where `state` is `pending`, `applied`, `rejected` or `outdated`.
+- **Questions and events carry `pendingNearby`**: the pending proposals on or next to the
+  question's places (`[{topic, option, summary}]`), so the agent doesn't propose against them blind.
+- **Events** (PROTOCOL.md §6), on `/events`, in `wait_for_questions` and as channel events:
+  - `proposal_applied {topic, option}`: the person applied it. Nothing to do.
+  - `proposal_rejected {topic, option, comment}`: the person rejected it. The comment also arrives as
+    a follow-up question in the topic, where the agent redoes the proposal.
+  - `proposal_outdated {topic, option}`: the document changed under it; ask to redo.
+
+The UI:
+
+- The topic card says **"The agent proposes N changes"**, shows the option tabs (A, B, …, each with
+  its title and why), then **Apply option X** and **Reject** (Reject takes an optional comment).
+- Switching options switches the preview in the document:
+  - WordCraft: insertions, deletions and "formatting changed" on the affected paragraphs; new
+    tables shown as they would be.
+  - GridCraft: old → new on the changed cells, like the heat map (the draft is the recalculated
+    scratch copy).
+  - DeckCraft: the changed shapes outlined, with their new text.
+- **Apply** replays the recorded commands as **one undo step**, the person's action, and adds a
+  decision note "chose X: <title>" to the topic.
+- If a recorded step doesn't fit any more (the document changed), nothing is applied: the card
+  says "out of date, ask the agent to redo" and the agent gets `proposal_outdated`.
+
+The skill and the hub's instructions say: in a topic, propose with `run_command {topic}`; never ask
+for confirmation in the chat (the person applies in the document); offer options when there is a
+real choice.
+
+## 4c. File context (v1.1)
+
+What the author wants every agent to know about the whole file: its purpose, audience, conventions,
+what is settled. Entries have an id, a title, a kind and text.
+
+- MCP: `get_file_context {document}`; `add_file_context {document, title, kind, text}` → id;
+  `update_file_context {document, id, title?, text?}`; `remove_file_context {document, id}`.
+- `get_context` and every question carry a short summary of it (`fileContext`).
+- It is kept in the file and kept when the document is sent.
+- The **File context** button beside the pane's tabs opens it. The person's edits there are
+  undoable (§4a).
 
 ## 5. Files
 

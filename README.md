@@ -20,8 +20,12 @@ one, and from then on answers the questions you ask in it:
 - **Claude Desktop / Cowork**: the agent waits for questions (`wait_for_questions`) in a loop.
 - **Claude Code with channels**: questions are pushed into the session as they're asked.
 
-Several documents can be bound to several conversations at the same time. Each app's Agent tab has
-a "Copy phrase for Claude" button with the exact wording.
+Several documents can be bound to several conversations at the same time. In each app, the Agent
+tab's Context group has the steps ready (Get ready ▸ Install AItoCraft, Ask Cowork / my session to
+collaborate), and shows a Ready lamp once a conversation is listening.
+
+Inside a topic the agent doesn't edit the document: it proposes changes (with options when there is
+a real choice), and you apply or reject them in the document. See [TOPICS.md](TOPICS.md).
 
 ## Install once
 
