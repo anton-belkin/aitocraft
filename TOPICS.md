@@ -75,6 +75,30 @@ Plain references are linked automatically when they are unambiguous: in GridCraf
 `Sheet2!B4`; in WordCraft `§12`; in DeckCraft `slide 4`. Topic and note ids are stable; topic
 *numbers* in a link are resolved when shown, so they follow renumbering.
 
+## 2a. Stable places and links
+
+Every place and every in-text link points at an **anchor**, never at a bare address, so it survives
+editing and a round trip through Excel, Word or PowerPoint.
+
+- **Anchors.** GridCraft: hidden defined names (`_GcAgent_<id>`, as today); they move with
+  inserted and deleted rows and columns and with cut and paste. WordCraft: bookmarks in the
+  document (`w:bookmarkStart/End`, named `_GcPlace_<id>`). DeckCraft: the shape's stable id (plus a
+  character range for text inside a shape).
+- **Links become anchors when the text is stored.** When the agent writes `[B1](cell:Sheet1!B1)`
+  or a text contains a plain `B1` / `§12` / `slide 4`, the app creates (or reuses) an anchor and
+  stores the link as `anchor:<id>`. A label that was the address is shown as the current address,
+  so after a row insert the answer reads `B2` and still leads to the same cell.
+- **Deleted content.** A place or link whose content was deleted shows struck through, marked
+  "removed", in the topic; it never silently disappears or points at the wrong thing.
+- **Copy and cut.**
+  - WordCraft: **cut and paste moves** the bookmark (the topic follows the text); **copy and paste
+    duplicates** it as a new bookmark of the same topic, so the topic gains a place (the clause now
+    exists twice and the note applies to both). Word itself drops duplicate bookmark names on
+    copy; ours are distinct names, so the file keeps both.
+  - DeckCraft: duplicating a shape or a slide duplicates its places in the same way.
+  - GridCraft: **cut moves** the place (as Excel's names do); **copy and fill don't duplicate**
+    places, because copying and filling formulas is mechanical and would flood topics with places.
+
 ## 3. The pane
 
 Three tabs:
