@@ -145,7 +145,8 @@ impl AppConn {
         })?
         .unwrap_or(Value::Null);
         if let Some(err) = reply.get("error") {
-            return Err(format!("{}: {}", self.title, err.get("message").and_then(Value::as_str).unwrap_or("error")));
+            // The app's own words (they name the app and say what to do), as they are.
+            return Err(err.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{}: error", self.title)));
         }
         Ok(reply.get("result").cloned().unwrap_or(Value::Null))
     }

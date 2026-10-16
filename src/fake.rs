@@ -25,6 +25,8 @@ pub struct FakeApp {
     pub events: Arc<Mutex<Vec<Value>>>,
     pub event_queries: Arc<Mutex<Vec<String>>>,
     pub inits: Arc<AtomicUsize>,
+    /// Listeners the app has dropped: calls carrying one are refused, as the apps do.
+    pub dropped: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -66,9 +68,12 @@ impl FakeApp {
             events: Arc::default(),
             event_queries: Arc::default(),
             inits: Arc::default(),
+            dropped: Arc::default(),
             stop: Arc::default(),
         };
         let (calls, events, queries, inits, stop) = (f.calls.clone(), f.events.clone(), f.event_queries.clone(), f.inits.clone(), f.stop.clone());
+        let dropped = f.dropped.clone();
+        let attaches = Arc::new(AtomicUsize::new(0));
         std::thread::spawn(move || {
             for s in listener.incoming().flatten() {
                 if stop.load(Ordering::Acquire) {
@@ -76,7 +81,8 @@ impl FakeApp {
                 }
                 let (calls, events, queries, inits, stop, tools) =
                     (calls.clone(), events.clone(), queries.clone(), inits.clone(), stop.clone(), tools.clone());
-                std::thread::spawn(move || serve(s, title, &tools, reply, &calls, &events, &queries, &inits, &stop));
+                let (dropped, attaches) = (dropped.clone(), attaches.clone());
+                std::thread::spawn(move || serve(s, title, &tools, reply, &calls, &events, &queries, &inits, &stop, &dropped, &attaches));
             }
         });
         f
@@ -173,6 +179,8 @@ fn serve(
     queries: &Mutex<Vec<String>>,
     inits: &AtomicUsize,
     stop: &AtomicBool,
+    dropped: &Mutex<Vec<String>>,
+    attaches: &AtomicUsize,
 ) {
     let Ok(mut w) = s.try_clone() else { return };
     let mut r = BufReader::new(s);
@@ -226,10 +234,32 @@ fn serve(
             let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             calls.lock().unwrap().push((name.clone(), args.clone()));
+            let refuse = |text: String, rpc: bool| {
+                if rpc {
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": text}})
+                } else {
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": text}], "isError": true}})
+                }
+            };
+            let off = format!("the agent connection is off in {title} (Agent tab ▸ Connection ▸ Mode)");
+            if let Some(l) = args.get("listener").and_then(Value::as_str)
+                && dropped.lock().unwrap().iter().any(|d| d == l)
+            {
+                let text = format!("listener {l} is not attached (dropped after 90 s without a call, or {title} restarted): attach again");
+                respond(&mut w, reply, &refuse(text, false), false);
+                return;
+            }
+            if name == "off_tool" || name == "off_rpc" {
+                respond(&mut w, reply, &refuse(off, name == "off_rpc"), false);
+                return;
+            }
             let out = match name.as_str() {
                 "attach" => {
                     let doc = args.get("document").and_then(Value::as_str).unwrap_or("");
-                    json!({"listener": format!("L-{doc}"), "document": doc, "title": "?", "app": title})
+                    // The first listener of a document is L-<doc>; later ones are numbered.
+                    let n = attaches.fetch_add(1, Ordering::AcqRel);
+                    let l = if dropped.lock().unwrap().is_empty() { format!("L-{doc}") } else { format!("L{n}-{doc}") };
+                    json!({"listener": l, "document": doc, "title": "?", "app": title})
                 }
                 "wait_for_questions" => json!([]),
                 _ => json!({"app": title, "tool": name, "args": args}),

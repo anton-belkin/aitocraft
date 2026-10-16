@@ -440,3 +440,37 @@ fn a_cancelled_call_gets_no_reply() {
     assert!(out.lines().is_empty());
     let _ = std::fs::remove_dir_all(d.parent().unwrap());
 }
+
+#[test]
+fn a_dropped_listener_is_attached_again_and_app_errors_pass_through() {
+    let d = dir("dropped");
+    let grid = FakeApp::start("gridcraft", "GridCraft", vec![tool("off_tool", "Off.", json!({})), tool("off_rpc", "Off.", json!({}))], Reply::Json);
+    grid.register(&d, &[("1", "budget.xlsx", true)], 0);
+    let (hub, _out) = hub_in(&d, None);
+    init(&hub, "claude-ai");
+    let (_, _, a) = call(&hub, "attach", json!({"document": "budget", "label": "Acme"}));
+    let first = a["listener"].as_str().unwrap().to_string();
+    grid.dropped.lock().unwrap().push(first.clone());
+    let (err, text, v) = call(&hub, "wait_for_questions", json!({"document": grid.doc("1"), "timeout_seconds": 0}));
+    assert!(!err, "{text}");
+    assert_eq!(v, json!([]));
+    let attaches = grid.calls_of("attach");
+    assert_eq!(attaches.len(), 2, "attached again");
+    assert_eq!(attaches[1]["label"], "Claude · Acme", "with the same label");
+    let waits = grid.calls_of("wait_for_questions");
+    assert_eq!(waits.len(), 2);
+    assert_eq!(waits[0]["listener"], first.as_str());
+    assert_ne!(waits[1]["listener"], first.as_str(), "retried with the new listener");
+    call(&hub, "list_questions", json!({"document": grid.doc("1")}));
+    assert_eq!(grid.calls_of("list_questions")[0]["listener"], waits[1]["listener"], "later calls use the new one");
+
+    // Off mode: the app's words reach the agent as they are, as a tool result or a JSON-RPC error.
+    let off = "the agent connection is off in GridCraft (Agent tab ▸ Connection ▸ Mode)";
+    let (err, text, _) = call(&hub, "off_tool", json!({}));
+    assert!(err);
+    assert_eq!(text, off);
+    let (err, text, _) = call(&hub, "off_rpc", json!({}));
+    assert!(err);
+    assert_eq!(text, off);
+    let _ = std::fs::remove_dir_all(d.parent().unwrap());
+}

@@ -675,15 +675,14 @@ impl Hub {
             Ok(v) => v,
             Err(e) => return tool_err(e),
         };
-        // The app dropped our listener (quiet for over 90 s): attach again and retry once.
+        // The app dropped our listener (quiet for over 90 s, or it restarted): attach again and retry once.
         if result.get("isError").and_then(Value::as_bool) == Some(true)
             && r.args.get("listener").is_some()
             && let Some(doc) = r.args.get("document").and_then(Value::as_str)
         {
             let text = crate::util::text_of(&result).to_lowercase();
-            if text.contains("listener")
-                && (text.contains("unknown") || text.contains("not found") || text.contains("no listener") || text.contains("expired"))
-            {
+            let dropped = ["not attached", "attach again", "unknown", "not found", "no listener", "expired", "dropped"];
+            if text.contains("listener") && dropped.iter().any(|w| text.contains(w)) {
                 let label = lock(&self.st).bindings.get(doc).map(|b| b.label.clone());
                 if let Some(label) = label
                     && let Ok(a) = r.conn.call_tool("attach", &json!({"document": doc, "label": label}), Duration::from_secs(10))
