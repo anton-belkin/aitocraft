@@ -88,8 +88,22 @@ editing and a round trip through Excel, Word or PowerPoint.
   or a text contains a plain `B1` / `§12` / `slide 4`, the app creates (or reuses) an anchor and
   stores the link as `anchor:<id>`. A label that was the address is shown as the current address,
   so after a row insert the answer reads `B2` and still leads to the same cell.
-- **Deleted content.** A place or link whose content was deleted shows struck through, marked
-  "removed", in the topic; it never silently disappears or points at the wrong thing.
+- **Every rendered text follows the anchors silently.** Answers in the discussion, notes, status
+  text and questions are stored with anchors and shown with current addresses: insert a row and a
+  past answer that said `C4` now says `C5`, with nothing marking the change. The same for labels
+  of places.
+- **Ranges, and the agent widening them.** A place or link can be a cell or a range (GridCraft), a
+  passage of any length (WordCraft), several shapes (DeckCraft). When the agent sees that an answer
+  concerns more than what was selected (the whole row, the whole table, the whole clause), it widens
+  the place with `widen_place {place, to}` and says why. The person sees the wider outline.
+- **Deleted content keeps its whereabouts.** When the content of a place or link is deleted, the
+  app keeps where it was instead of losing it. Just before the delete (an observer on the deleting
+  commands), it anchors the neighbours. GridCraft: the cells just before and after the deleted
+  rows or columns, as hidden names. WordCraft: a collapsed bookmark at the deletion point, plus the
+  deleted text kept in the layer. DeckCraft: the slide and the position. The place then reads
+  "removed — was between [B2](…) and [B3](…)" (or "removed here: “twelve months”"), with live
+  links that keep following later edits. It is struck through in the topic, never silently gone
+  and never pointing at the wrong thing. Undo of the delete brings the place back as it was.
 - **Copy and cut.**
   - WordCraft: **cut and paste moves** the bookmark (the topic follows the text); **copy and paste
     duplicates** it as a new bookmark of the same topic, so the topic gains a place (the clause now
@@ -132,6 +146,8 @@ All tools take `document` (AItoCraft). New or changed:
 - `add_note {topic, title, kind, text}` → note id. Kinds: explanation, source (with `url`, `summary`),
   assumption, decision.
 - `add_places {topic, places: [{range | paragraph+quote | slide+shape, reason}]}`.
+- `widen_place {place, to: range | paragraph+quote | shapes, reason}`: widen a place to what the
+  answer is really about (a whole row, table, clause).
 - `set_status {topic, status: open | revise | info, text}`, and `propose_agreed {topic, reasons}`.
   Agreed by the agent is refused.
 - Questions in `wait_for_questions` / events carry `topic` (id and number) and the topic's status,
