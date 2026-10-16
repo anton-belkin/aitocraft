@@ -156,6 +156,32 @@ All tools take `document` (AItoCraft). New or changed:
 The skill gets four lines: link inside the text; add places that a change here affects; leave
 notes that will still matter after the chat; never mark Agreed, propose it.
 
+## 4a. Undo
+
+Everything the **person** does with the agent layer is undoable with ⌘Z, in the same history as
+their edits and in order. The **agent's** contributions are not on the person's undo stack.
+
+- **Mechanism.** A generic engine hook (upstreamable): custom undo steps with a label, `undo` and
+  `redo`, pushed into the document's ordinary history beside its snapshot steps. Layer actions push
+  such a step. They don't snapshot the document, so undoing a cell edit still never touches the
+  layer, and a layer step never restores cells.
+- **Undoable person actions:** mark and unmark client data, ask (typed or by voice), a new topic or
+  place, set status, pin a note, delete a note, reject an agent's place, switch an alternative,
+  safe file on and off, input ranges.
+- **Undo of a question:**
+  - Not yet taken by the agent: the question and its places disappear.
+  - Being worked on: it's withdrawn. The agent gets a `withdrawn` event, and `answer_question`
+    returns "this question was withdrawn by the user; drop it".
+  - Still transcribing (voice): the transcription is cancelled.
+  - Redo brings the question and its places back and **sends it again**.
+  - Already answered: undo hides the topic with its answer. Redo restores it as it was, answer
+    included, without asking the agent again.
+- **Not on the person's stack:** the agent's answers, notes, added places, proposed statuses. Each
+  has "remove" or "reject" in the UI, and that click is the person's action, so it is undoable.
+  Cell edits the agent made through `run_command` are document edits and stay in the ordinary
+  history, labelled "Undo (agent): …".
+- WordCraft and DeckCraft do the same through their own undo models.
+
 ## 5. Files
 
 The layer's format moves to version 2: questions become topics (one topic per existing question,
