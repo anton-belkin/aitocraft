@@ -29,6 +29,11 @@ a real choice), and you apply or reject them in the document. See [TOPICS.md](TO
 
 ## Install once
 
+For **Codex Desktop on macOS**, see the opt-in
+[shared App Server example](examples/codex-desktop/README.md). It includes chat-bound workbook
+links, a global experimental skill, architecture, installation and reboot instructions. It
+requires the companion GridCraft Codex context changes and does not change Claude configuration.
+
 Build it (Rust, stable):
 
 ```sh
