@@ -1,0 +1,4 @@
+interface:
+  display_name: "GridCraft Chat — эксперимент"
+  short_description: "Открыть XLSX в GridCraft с привязкой к этому чату"
+  default_prompt: "Используй $gridcraft-chat-experimental: дай ссылку на готовый XLSX для работы в GridCraft через этот чат."
